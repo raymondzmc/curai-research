@@ -176,6 +176,91 @@ def pretrain_entity_embeddings(args, data_path):
     return best_ckpt
 
 
+def evaluate_retrieval(args, model, tokenizer, test_set, id2synonyms):
+    logger = init_logger(f'evaluate_retrieval.log')
+    recalls = [[0, 0, 0], [0, 0, 0]]
+    model.eval()
+    id2vectors = {}
+    device = args.device
+
+    # Precompute entity embeddings
+    for concept_id, synonyms in id2synonyms.items():
+        synonym_inputs = tokenizer(synonyms, return_tensors="pt", padding=True)
+        synonym_inputs = {k: v.to(device) for k, v in synonym_inputs.items()}
+        with torch.no_grad():
+            synonym_vectors = model.encoder(**synonym_inputs)[0][:, 0, :].detach()
+            id2vectors[concept_id] = synonym_vectors
+
+    n_multi = 0
+    n_pairs = 0
+    for example in tqdm(test_set):
+        probs = []
+        with torch.no_grad():
+            text_input = {k: v.to(device) for k, v in example['text_inputs'].items()}
+            attention_masks = text_input['attention_mask']
+            input_hidden = model.encoder(**text_input)[0]
+
+
+            for concept_id, synonym_vectors in id2vectors.items():
+
+                if args.wo_contrastive:
+                    input_cls = input_hidden[:, 0]
+                    probs.append((concept_id, pairwise_cosine_similarity(input_cls, synonym_vectors).max().item()))
+                else:
+                    if model.ignore_cls:
+                        input_hidden = input_hidden[:, 1:, :]
+                        attention_masks = attention_masks[:, 1:]
+                    concept_representations = model.attention_layer(
+                        synonym_vectors,
+                        input_hidden,
+                        attention_mask=attention_masks,
+                    )[0]
+                    concept_representations = concept_representations.squeeze(0)
+                    probs.append((concept_id, pairwise_cosine_similarity(concept_representations, synonym_vectors).max().item()))
+
+            sorted_probs = sorted(probs, key=lambda x: x[1], reverse=True)
+
+            sorted_ids = [prob[0] for prob in sorted_probs]
+            for entity_idx, gt_id in enumerate(example['entity_ids']):
+                multi_span = example['multispan'][entity_idx]
+                n_pairs += 1
+
+                if multi_span:
+                    n_multi += 1
+                    recall_idx = 1
+                else:
+                    recall_idx = 0
+
+                if gt_id in sorted_ids[:1]:
+                    recalls[recall_idx][0] += 1
+                if gt_id in sorted_ids[:5]:
+                    recalls[recall_idx][1] += 1
+                if gt_id in sorted_ids[:10]:
+                    recalls[recall_idx][2] += 1
+
+
+
+    n_single = n_pairs - n_multi
+    print(f"Single Span: {n_single}/{len(test_set)}")
+    test_summary = f"Top-1 Recall: {round(recalls[0][0]/n_single, 4)}, \
+                     Top-5 Recall: {round(recalls[0][1]/n_single, 4)}, \
+                     Top-10 Recall: {round(recalls[0][2]/n_single, 4)}"
+    logger.info(test_summary)
+    print(test_summary)
+    print(f"Multi Span: {n_multi}/{len(test_set)}")
+    test_summary = f"Top-1 Recall: {round(recalls[1][0]/n_multi, 4)}, \
+                     Top-5 Recall: {round(recalls[1][1]/n_multi, 4)}, \
+                     Top-10 Recall: {round(recalls[1][2]/n_multi, 4)}"
+    logger.info(test_summary)
+    print(test_summary)
+    print(f"All: {n_pairs}")
+    test_summary = f"Top-1 Recall: {round((recalls[0][0] + recalls[1][0])/n_pairs, 4)}, \
+                     Top-5 Recall: {round((recalls[0][1] + recalls[1][1])/n_pairs, 4)}, \
+                     Top-10 Recall: {round((recalls[0][2] + recalls[1][2])/n_pairs, 4)}"
+    logger.info(test_summary)
+    print(test_summary)
+
+
 def train_contrastive(args, model, tokenizer, id2synonyms, train_set, save_path, top_k_ckpts=3, load_from=None):
     """
     Train the NER model using the supervised contrastive objective
@@ -236,12 +321,22 @@ def train_contrastive(args, model, tokenizer, id2synonyms, train_set, save_path,
             loss = 0.
             for input_idx, synonym_inputs in enumerate(batch_synonym_inputs[:-1]):
                 n_pos = min(max_positives, len(synonym_inputs['input_ids']))
+
+                if args.retrieval_loss:
+                    n_pos *= 2
+
                 n_neg = args.num_negatives
                 labels = torch.tensor([1 for _ in range(n_pos)] + [0 for _ in range(n_neg)]).to(device)
 
                 if args.use_contrastive_loss:
                     pos = output['entity_representations'][input_idx]
-                    neg = output['entity_representations'][-1]
+
+                    if args.retrieval_loss:
+                        pos = torch.cat((pos, output['entity_cls'][input_idx]))
+                        neg = output['entity_cls'][-1]
+                    else:
+                        neg = output['entity_representations'][-1]
+
                     embeddings = torch.cat((pos, neg))
                     loss += contrastive_criteria(embeddings.unsqueeze(1), labels=labels)
 
@@ -702,6 +797,8 @@ def run_hnlp(args):
         contrastive_ckpt_dir += '_nopretrain'
     if args.append_query:
         contrastive_ckpt_dir += '_concatquery'
+    if args.retrieval_loss:
+        contrastive_ckpt_dir += '_retrieval'
 
     os.makedirs(contrastive_ckpt_dir, exist_ok=True)
 
@@ -721,6 +818,10 @@ def run_hnlp(args):
         else:
             model.load_state_dict(torch.load(ckpt_save_path, map_location=args.device), strict=False)
             print(f"Loaded Checkpoints at \"{ckpt_save_path}\"")
+
+    if args.retrieval_loss:
+        evaluate_retrieval(args, model, tokenizer, test_set, id2synonyms)
+    pdb.set_trace()
 
     classifier_ckpt_dir = pjoin(args.checkpoints_dir, 'classifier')
     if args.append_query:

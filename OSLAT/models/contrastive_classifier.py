@@ -195,6 +195,8 @@ class ContrastiveEntityExtractor(nn.Module):
         if self.use_projection_head:
             self.projection_head = ProjectionHead(final_hidden_size, args.projection_hidden_size, args.projection_output_size)
 
+        self.project_entity_cls = args.retrieval_loss
+
         # self.classifier = MultipleBinaryClassifiers(final_hidden_size, args.classifier_hidden_size, self.n_classes, normalize=self.normalize)
 
 
@@ -204,6 +206,7 @@ class ContrastiveEntityExtractor(nn.Module):
     def forward(self, text_inputs, entities_inputs, return_hidden=False, return_loss_tensor=False, output_attentions=True):
 
         entity_representations = []
+        entity_clss = []
         attention = []
         logits = []
 
@@ -238,6 +241,9 @@ class ContrastiveEntityExtractor(nn.Module):
             if self.use_classification_loss:
                 logits.append(self.classifier(attention_representation).squeeze(-1))
 
+            if self.project_entity_cls:
+                projected_entity_cls = self.projection_head(entity_cls)
+                entity_clss.append(F.normalize(projected_entity_cls, dim=-1))
 
 
 
@@ -247,6 +253,7 @@ class ContrastiveEntityExtractor(nn.Module):
             output['hidden_states'] = hidden_states
 
         output['entity_representations'] = entity_representations
+        output['entity_cls'] = entity_clss
         output['attention'] = attention
         output['logits'] = logits
 

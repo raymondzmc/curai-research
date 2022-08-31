@@ -82,7 +82,7 @@ stopwords = pruned_stopwords_list
 #     er = RuleBasedEntityRecognizer(kb_item_dict, TextPreprocessor(), stopwords)
 #     return er, name2id, concept2synonyms
 
-def pretrain_entity_embeddings(args):
+def pretrain_entity_embeddings(args, save_path):
     """
     Pretrain the concept embeddings using supervised contrastive learning
     """
@@ -205,10 +205,10 @@ def pretrain_entity_embeddings(args):
             save_name = f"rfe_{args.encoder}_lr{args.lr}_epoch{epoch+1}_{round(diff, 3)}.pt"
             save_path = pjoin(save_dir, save_name)
             torch.save(model.encoder.state_dict(), save_path)
-            print(diff)
             best_ckpt = save_path
 
     return best_ckpt
+
 
 
 def evaluate_contrastive(model, tokenizer, test_loader, entity_inputs, eval_similarity=False, attention_heatmap_path=None, num_negatives=50):
@@ -270,6 +270,93 @@ def evaluate_contrastive(model, tokenizer, test_loader, entity_inputs, eval_simi
     results['avg_pos_sim'] = sum_pos_sim / n_pos
     results['avg_neg_sim'] = sum_neg_sim / n_neg
     return results
+
+
+def evaluate_retrieval(args, model, tokenizer, test_set, entity_inputs):
+    logger = init_logger(f'evaluate_retrieval.log')
+    model.eval()
+    concept2vectors = {}
+    device = args.device
+
+    # Precompute entity embeddings
+    for concept, synonym_inputs in entity_inputs.items():
+        synonym_inputs = {k: v.to(device) for k, v in synonym_inputs.items()}
+        with torch.no_grad():
+            synonym_vectors = model.encoder(**synonym_inputs)[0][:, 0, :].detach()
+        concept2vectors[concept] = synonym_vectors
+
+    n_multi = 0
+    n_pairs = 0
+    recalls = [[0, 0, 0], [0, 0, 0]]
+    for example in tqdm(test_set):
+
+        # OSLAT-Linker
+        probs = []
+        with torch.no_grad():
+            text_input = {k: v.to(device) for k, v in example['input'].items()}
+            attention_masks = text_input['attention_mask']
+            input_hidden = model.encoder(**text_input)[0]
+
+            if model.ignore_cls:
+                input_hidden = input_hidden[:, 1:, :]
+                attention_masks = attention_masks[:, 1:]
+
+            for concept, synonym_vectors in concept2vectors.items():
+                concept_representations = model.attention_layer(
+                    synonym_vectors,
+                    input_hidden,
+                    attention_mask=attention_masks,
+                )[0]
+
+                probs.append((concept, pairwise_cosine_similarity(concept_representations, synonym_vectors).max().item()))
+
+        sorted_probs = sorted(probs, key=lambda x: x[1], reverse=True)
+        sorted_ids = [prob[0] for prob in sorted_probs]
+
+
+        # Accumuate scores
+        for entity_idx, name in enumerate(example['entities']):
+            n_pairs += 1
+
+            # TO DO: Multi-Span is obtained from annotations
+            # multi_span = example['is_multi'][name] > 1
+            multi_span = False
+
+            if multi_span:
+                n_multi += 1
+                recall_idx = 1
+            else:
+                recall_idx = 0
+
+            if name in sorted_ids[:1]:
+                recalls[recall_idx][0] += 1
+            if name in sorted_ids[:5]:
+                recalls[recall_idx][1] += 1
+            if name in sorted_ids[:10]:
+                recalls[recall_idx][2] += 1
+
+    n_single = n_pairs - n_multi
+    print(f"Single Span: {n_single}/{len(test_set)}")
+    test_summary = f"Top-1 Recall: {round(recalls[0][0]/n_single, 4)}, \
+                     Top-5 Recall: {round(recalls[0][1]/n_single, 4)}, \
+                     Top-10 Recall: {round(recalls[0][2]/n_single, 4)}"
+    logger.info(test_summary)
+    print(test_summary)
+    print(f"Multi Span: {n_multi}/{len(test_set)}")
+    test_summary = f"Top-1 Recall: {round(recalls[1][0]/n_multi, 4)}, \
+                     Top-5 Recall: {round(recalls[1][1]/n_multi, 4)}, \
+                     Top-10 Recall: {round(recalls[1][2]/n_multi, 4)}"
+    logger.info(test_summary)
+    print(test_summary)
+    print(f"All: {n_pairs}")
+    test_summary = f"Top-1 Recall: {round((recalls[0][0] + recalls[1][0])/n_pairs, 4)}, \
+                     Top-5 Recall: {round((recalls[0][1] + recalls[1][1])/n_pairs, 4)}, \
+                     Top-10 Recall: {round((recalls[0][2] + recalls[1][2])/n_pairs, 4)}"
+    logger.info(test_summary)
+    print(test_summary)
+
+
+
 
 def train_contrastive(args, model, tokenizer, entity_inputs, dataloader, save_path, test_loader=None, top_k_ckpts=3, load_from=None):
     """
@@ -340,12 +427,21 @@ def train_contrastive(args, model, tokenizer, entity_inputs, dataloader, save_pa
             loss = 0.
             for entity_idx, entity_name in enumerate(batch['entities'][0]):
                 n_pos = min(10, len(entity_inputs[entity_name]['input_ids']))
+                if args.retrieval_loss:
+                    n_pos *= 2
+
                 n_neg = args.num_negatives
                 labels = torch.tensor([1 for _ in range(n_pos)] + [0 for _ in range(n_neg)]).to(device)
 
                 # if args.use_contrastive_loss:
                 pos = output['entity_representations'][entity_idx]
-                neg = output['entity_representations'][-1]
+
+                if args.retrieval_loss:
+                    pos = torch.cat((pos, output['entity_cls'][entity_idx]))
+                    neg = output['entity_cls'][-1]
+                else:
+                    neg = output['entity_representations'][-1]
+
                 embeddings = torch.cat((pos, neg))
                 loss += contrastive_criteria(embeddings.unsqueeze(1), labels=labels)
 
@@ -828,7 +924,7 @@ def train_classifier(args, model, tokenizer, entity_inputs, entity_synonyms, tra
                 n_pairs += 1
 
                 # TO DO: Multi-Span is obtained from annotations
-                multi_span = False
+                multi_span = example['is_multi'][name] > 1
 
                 if multi_span:
                     n_multi += 1
@@ -858,15 +954,6 @@ def train_classifier(args, model, tokenizer, entity_inputs, entity_synonyms, tra
         print("\nOSLAT-Linker:")
         print_results(recalls)
 
-            
-                    
-
-
-
-        
-
-    # save_name = f"{args.encoder}_lr{args.lr}_epoch{args.epoch}.pth"
-    # ckpt_save_path = pjoin(ckpt_dir, save_name)
     torch.save(model.state_dict(), ckpt_save_path)
     return model
 
@@ -877,27 +964,11 @@ def run_rfe(args):
     args.processed_data_path = 'resources/CuRSA/CuRSA-FIXED-v0-processed-all.pth'
 
     if not args.wo_pretraining:
-        best_ckpt_path = pretrain_entity_embeddings(args)
-        # best_ckpt_path = pjoin('checkpoints', 'encoders', 'hnlp_biobert_lr0.0002_epoch18_0.17.pt')
+        # best_ckpt_path = pretrain_entity_embeddings(args)
+        best_ckpt_path = pjoin('checkpoints', 'encoders', 'rfe_biobert_lr0.002_epoch19_0.139.pt')
     else:
         best_ckpt_path = None
     args.lr = 0.0002
-
-    # USERNAME = "postgres"
-    # PASSWORD = "1yjEkbdCMkdv5cqDJB7h2yyh2rlBid"
-    # SECRET_KEY = b"gDe5jNAKTu4NHtZJ"
-    # DB_URI = "ml-adhoc-cluster.c6fksyrlat9v.us-west-2.rds.amazonaws.com"
-    # DIALECT = "postgresql"
-    # SQLALCHEMY_DATABASE_URI=f"{DIALECT}://{USERNAME}:{PASSWORD}@{DB_URI}"
-    # SQLALCHEMY_TRACK_MODIFICATIONS=False
-    # SCHEMA = "rfe_ner_annotator"
-
-    # engine = sqlalchemy.create_engine(SQLALCHEMY_DATABASE_URI)
-    # query = query = f'''
-    #         SELECT * FROM {SCHEMA}.annotation
-    #     '''
-    # with engine.connect() as con:
-    #     df = pd.read_sql(query,con)
 
 
     # Initialize Neural Model
@@ -935,11 +1006,13 @@ def run_rfe(args):
         contrastive_ckpt_dir += '_nopretrain'
     if args.append_query:
         contrastive_ckpt_dir += '_concatquery'
+    if args.retrieval_loss:
+        contrastive_ckpt_dir += '_retrieval'
 
     os.makedirs(contrastive_ckpt_dir, exist_ok=True)
 
-    ckpt_save_path = pjoin(contrastive_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
 
+    ckpt_save_path = pjoin(contrastive_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
     if not args.wo_contrastive:
         if not os.path.isfile(ckpt_save_path):
             model = train_contrastive(args, model, tokenizer, entity_inputs, train_loader, ckpt_save_path, test_loader=test_loader, load_from=best_ckpt_path)
@@ -947,36 +1020,36 @@ def run_rfe(args):
             model.load_state_dict(torch.load(ckpt_save_path, map_location=args.device), strict=False)
             print(f"Loaded Checkpoints at \"{ckpt_save_path}\"")
 
-
+    evaluate_retrieval(args, model, tokenizer, test_loader.dataset, entity_inputs)
     # test_encounter_ids = set([x[1] for x in data_split['TEST']])
     # test_ids = set([i for i, ex in enumerate(processed_data['data']) if ex['id'] in test_encounter_ids])
-    classifier_ckpt_dir = pjoin(args.checkpoints_dir, 'classifier')
-    if args.append_query:
-        classifier_ckpt_dir += '_concatquery'
+    # classifier_ckpt_dir = pjoin(args.checkpoints_dir, 'classifier')
+    # if args.append_query:
+    #     classifier_ckpt_dir += '_concatquery'
 
-    if args.wo_pretraining:
-        classifier_ckpt_dir += '_nopretrain'
-    if args.wo_contrastive:
-        classifier_ckpt_dir += '_nocontrastive'
+    # if args.wo_pretraining:
+    #     classifier_ckpt_dir += '_nopretrain'
+    # if args.wo_contrastive:
+    #     classifier_ckpt_dir += '_nocontrastive'
 
-    if args.classification_loss == 'focal':
-        classifier_ckpt_dir += '_focal'
+    # if args.classification_loss == 'focal':
+    #     classifier_ckpt_dir += '_focal'
 
-    if args.freeze_weights:
-        classifier_ckpt_dir += '_freeze'
+    # if args.freeze_weights:
+    #     classifier_ckpt_dir += '_freeze'
 
-    os.makedirs(classifier_ckpt_dir, exist_ok=True)
-    ckpt_save_path = pjoin(classifier_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
-    model = train_classifier(
-        args,
-        model,
-        tokenizer,
-        entity_inputs,
-        processed_data['synonyms_names'],
-        train_loader,
-        ckpt_save_path,
-        test_set=test_loader.dataset,
-    )
+    # os.makedirs(classifier_ckpt_dir, exist_ok=True)
+    # ckpt_save_path = pjoin(classifier_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
+    # model = train_classifier(
+    #     args,
+    #     model,
+    #     tokenizer,
+    #     entity_inputs,
+    #     processed_data['synonyms_names'],
+    #     train_loader,
+    #     ckpt_save_path,
+    #     test_set=test_loader.dataset,
+    # )
 
 
 

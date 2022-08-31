@@ -73,10 +73,12 @@ if __name__ == "__main__":
     # Entity Linking
     parser.add_argument('-hidden_states_pooling_method', type=str, default='mean', choices=['max', 'mean', 'cls'])
 
+    # Contrastive learning
     parser.add_argument('-temperature', type=float, default=0.07)
     parser.add_argument('-use_contrastive_loss', action='store_true', default=True)
     parser.add_argument('-contrastive_lambda', type=float, default=0.1)
     parser.add_argument('-num_negatives', help='Number of negatives for contrastive loss', type=int, default=100)
+    parser.add_argument('-retrieval_loss', action='store_true', help='Use retrieval loss by push together label-mention with label representation',)
 
     parser.add_argument('-combine_subwords', help='Combine subword tokens for visualization', action='store_true', default=True)
     
@@ -121,7 +123,7 @@ if __name__ == "__main__":
     args.device = torch.device(f'cuda:{args.device}') if torch.cuda.is_available() else 'cpu'
 
     if args.dataset == 'hnlp':
-        run_hNLP(args)
+        run_hnlp(args)
     elif args.dataset == 'rfe':
         run_rfe(args)
     else:

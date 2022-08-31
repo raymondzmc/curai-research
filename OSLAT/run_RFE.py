@@ -319,8 +319,8 @@ def evaluate_retrieval(args, model, tokenizer, test_set, entity_inputs):
             n_pairs += 1
 
             # TO DO: Multi-Span is obtained from annotations
-            # multi_span = example['is_multi'][name] > 1
-            multi_span = False
+            multi_span = example['is_multi'][name] > 1
+            # multi_span = False
 
             if multi_span:
                 n_multi += 1

@@ -964,8 +964,8 @@ def run_rfe(args):
     args.processed_data_path = 'resources/CuRSA/CuRSA-FIXED-v0-processed-all.pth'
 
     if not args.wo_pretraining:
-        # best_ckpt_path = pretrain_entity_embeddings(args)
-        best_ckpt_path = pjoin('checkpoints', 'encoders', 'rfe_biobert_lr0.002_epoch19_0.139.pt')
+        best_ckpt_path = pretrain_entity_embeddings(args)
+        # best_ckpt_path = pjoin('checkpoints', 'encoders', 'rfe_biobert_lr0.002_epoch19_0.139.pt')
     else:
         best_ckpt_path = None
     args.lr = 0.0002
@@ -1000,7 +1000,10 @@ def run_rfe(args):
     # er, name2id, concept2synonyms = init_rule_based_ner()
     entity_inputs = processed_data['entity_synonyms']
 
-    contrastive_ckpt_dir = pjoin(args.checkpoints_dir, 'contrastive_ner_rfe')
+    if args.cross_dataset:
+        contrastive_ckpt_dir = pjoin(args.checkpoints_dir, 'contrastive_ner_hnlp')
+    else:
+        contrastive_ckpt_dir = pjoin(args.checkpoints_dir, 'contrastive_ner_rfe')
 
     if args.wo_pretraining:
         contrastive_ckpt_dir += '_nopretrain'
@@ -1015,41 +1018,45 @@ def run_rfe(args):
     ckpt_save_path = pjoin(contrastive_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
     if not args.wo_contrastive:
         if not os.path.isfile(ckpt_save_path):
+
+            if cross_dataset:
+                raise Exception("Model must first be trained on hNLP!")
+
             model = train_contrastive(args, model, tokenizer, entity_inputs, train_loader, ckpt_save_path, test_loader=test_loader, load_from=best_ckpt_path)
         else:
             model.load_state_dict(torch.load(ckpt_save_path, map_location=args.device), strict=False)
             print(f"Loaded Checkpoints at \"{ckpt_save_path}\"")
 
-    evaluate_retrieval(args, model, tokenizer, test_loader.dataset, entity_inputs)
-    # test_encounter_ids = set([x[1] for x in data_split['TEST']])
-    # test_ids = set([i for i, ex in enumerate(processed_data['data']) if ex['id'] in test_encounter_ids])
-    # classifier_ckpt_dir = pjoin(args.checkpoints_dir, 'classifier')
-    # if args.append_query:
-    #     classifier_ckpt_dir += '_concatquery'
+    if args.retrieval_loss:
+        evaluate_retrieval(args, model, tokenizer, test_loader.dataset, entity_inputs)
+    else:
+        classifier_ckpt_dir = pjoin(args.checkpoints_dir, 'classifier')
+        if args.append_query:
+            classifier_ckpt_dir += '_concatquery'
 
-    # if args.wo_pretraining:
-    #     classifier_ckpt_dir += '_nopretrain'
-    # if args.wo_contrastive:
-    #     classifier_ckpt_dir += '_nocontrastive'
+        if args.wo_pretraining:
+            classifier_ckpt_dir += '_nopretrain'
+        if args.wo_contrastive:
+            classifier_ckpt_dir += '_nocontrastive'
 
-    # if args.classification_loss == 'focal':
-    #     classifier_ckpt_dir += '_focal'
+        if args.classification_loss == 'focal':
+            classifier_ckpt_dir += '_focal'
 
-    # if args.freeze_weights:
-    #     classifier_ckpt_dir += '_freeze'
+        if args.freeze_weights:
+            classifier_ckpt_dir += '_freeze'
 
-    # os.makedirs(classifier_ckpt_dir, exist_ok=True)
-    # ckpt_save_path = pjoin(classifier_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
-    # model = train_classifier(
-    #     args,
-    #     model,
-    #     tokenizer,
-    #     entity_inputs,
-    #     processed_data['synonyms_names'],
-    #     train_loader,
-    #     ckpt_save_path,
-    #     test_set=test_loader.dataset,
-    # )
+        os.makedirs(classifier_ckpt_dir, exist_ok=True)
+        ckpt_save_path = pjoin(classifier_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
+        model = train_classifier(
+            args,
+            model,
+            tokenizer,
+            entity_inputs,
+            processed_data['synonyms_names'],
+            train_loader,
+            ckpt_save_path,
+            test_set=test_loader.dataset,
+        )
 
 
 

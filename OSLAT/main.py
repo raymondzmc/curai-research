@@ -100,6 +100,7 @@ if __name__ == "__main__":
     # Ablation Experiments
     parser.add_argument('-wo_pretraining', action='store_true')
     parser.add_argument('-wo_contrastive', action='store_true')
+    parser.add_argument('-cross_dataset', action='store_true', help="Cross-dataset experiments")
 
     # Classifier
     parser.add_argument('-classification_loss', default='bce', type=str, choices=['bce', 'focal'])

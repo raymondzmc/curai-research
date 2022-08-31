@@ -790,8 +790,10 @@ def run_hnlp(args):
     train_set = HNLPContrastiveNERDataset(data_split['TRAIN'], tokenizer, id2synonyms)
     test_set = HNLPContrastiveNERDataset(data_split['TEST'], tokenizer, id2synonyms)
 
-
-    contrastive_ckpt_dir = pjoin(args.checkpoints_dir, 'contrastive_ner_hnlp')
+    if args.cross_dataset:
+        contrastive_ckpt_dir = pjoin(args.checkpoints_dir, 'contrastive_ner_rfe')
+    else:
+        contrastive_ckpt_dir = pjoin(args.checkpoints_dir, 'contrastive_ner_hnlp')
 
     if args.wo_pretraining:
         contrastive_ckpt_dir += '_nopretrain'
@@ -805,6 +807,10 @@ def run_hnlp(args):
     ckpt_save_path = pjoin(contrastive_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
     if not args.wo_contrastive:
         if not os.path.isfile(ckpt_save_path):
+
+            if cross_dataset:
+                raise Exception("Model must first be trained on RFE!")
+
             model = train_contrastive(
                 args,
                 model,
@@ -816,39 +822,39 @@ def run_hnlp(args):
                 load_from=best_ckpt_path,
             )
         else:
+
             model.load_state_dict(torch.load(ckpt_save_path, map_location=args.device), strict=False)
             print(f"Loaded Checkpoints at \"{ckpt_save_path}\"")
 
     if args.retrieval_loss:
         evaluate_retrieval(args, model, tokenizer, test_set, id2synonyms)
-    pdb.set_trace()
+    else:
+        classifier_ckpt_dir = pjoin(args.checkpoints_dir, 'classifier')
+        if args.append_query:
+            classifier_ckpt_dir += '_concatquery'
 
-    classifier_ckpt_dir = pjoin(args.checkpoints_dir, 'classifier')
-    if args.append_query:
-        classifier_ckpt_dir += '_concatquery'
+        if args.wo_pretraining:
+            classifier_ckpt_dir += '_nopretrain'
+        if args.wo_contrastive:
+            classifier_ckpt_dir += '_nocontrastive'
 
-    if args.wo_pretraining:
-        classifier_ckpt_dir += '_nopretrain'
-    if args.wo_contrastive:
-        classifier_ckpt_dir += '_nocontrastive'
+        if args.classification_loss == 'focal':
+            classifier_ckpt_dir += '_focal'
 
-    if args.classification_loss == 'focal':
-        classifier_ckpt_dir += '_focal'
+        if args.freeze_weights:
+            classifier_ckpt_dir += '_freeze'
 
-    if args.freeze_weights:
-        classifier_ckpt_dir += '_freeze'
-
-    os.makedirs(classifier_ckpt_dir, exist_ok=True)
-    ckpt_save_path = pjoin(classifier_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
-    model = train_classifier(
-        args,
-        model,
-        tokenizer,
-        id2synonyms,
-        train_set,
-        ckpt_save_path,
-        test_set=test_set,
-    )
+        os.makedirs(classifier_ckpt_dir, exist_ok=True)
+        ckpt_save_path = pjoin(classifier_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
+        model = train_classifier(
+            args,
+            model,
+            tokenizer,
+            id2synonyms,
+            train_set,
+            ckpt_save_path,
+            test_set=test_set,
+        )
 
 
     """

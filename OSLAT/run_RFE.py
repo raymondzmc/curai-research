@@ -82,7 +82,7 @@ stopwords = pruned_stopwords_list
 #     er = RuleBasedEntityRecognizer(kb_item_dict, TextPreprocessor(), stopwords)
 #     return er, name2id, concept2synonyms
 
-def pretrain_entity_embeddings(args, save_path):
+def pretrain_entity_embeddings(args):
     """
     Pretrain the concept embeddings using supervised contrastive learning
     """
@@ -307,8 +307,7 @@ def evaluate_retrieval(args, model, tokenizer, test_set, entity_inputs):
                     input_hidden,
                     attention_mask=attention_masks,
                 )[0]
-
-                probs.append((concept, pairwise_cosine_similarity(concept_representations, synonym_vectors).max().item()))
+                probs.append((concept, pairwise_cosine_similarity(concept_representations.squeeze(0), synonym_vectors).max().item()))
 
         sorted_probs = sorted(probs, key=lambda x: x[1], reverse=True)
         sorted_ids = [prob[0] for prob in sorted_probs]
@@ -964,8 +963,8 @@ def run_rfe(args):
     args.processed_data_path = 'resources/CuRSA/CuRSA-FIXED-v0-processed-all.pth'
 
     if not args.wo_pretraining:
-        best_ckpt_path = pretrain_entity_embeddings(args)
-        # best_ckpt_path = pjoin('checkpoints', 'encoders', 'rfe_biobert_lr0.002_epoch19_0.139.pt')
+        # best_ckpt_path = pretrain_entity_embeddings(args)
+        best_ckpt_path = pjoin('checkpoints', 'encoders', 'rfe_biobert_lr0.002_epoch19_0.139.pt')
     else:
         best_ckpt_path = None
     args.lr = 0.0002
@@ -1019,7 +1018,7 @@ def run_rfe(args):
     if not args.wo_contrastive:
         if not os.path.isfile(ckpt_save_path):
 
-            if cross_dataset:
+            if args.cross_dataset:
                 raise Exception("Model must first be trained on hNLP!")
 
             model = train_contrastive(args, model, tokenizer, entity_inputs, train_loader, ckpt_save_path, test_loader=test_loader, load_from=best_ckpt_path)

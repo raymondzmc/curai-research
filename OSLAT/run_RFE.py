@@ -104,7 +104,7 @@ def pretrain_entity_embeddings(args):
     else:
         processed_data = torch.load(args.processed_data_path)
 
-    entity_inputs = processed_data['entity_synonyms']
+    entity_inputs = processed_data['pretrain_entity_synonyms']
 
     KB_entities = [] 
 
@@ -318,8 +318,8 @@ def evaluate_retrieval(args, model, tokenizer, test_set, entity_inputs):
             n_pairs += 1
 
             # TO DO: Multi-Span is obtained from annotations
-            multi_span = example['is_multi'][name] > 1
-            # multi_span = False
+            # multi_span = example['is_multi'][name] > 1
+            multi_span = False
 
             if multi_span:
                 n_multi += 1
@@ -335,13 +335,13 @@ def evaluate_retrieval(args, model, tokenizer, test_set, entity_inputs):
                 recalls[recall_idx][2] += 1
 
     n_single = n_pairs - n_multi
-    print(f"Single Span: {n_single}/{len(test_set)}")
+    print(f"Single Span: {n_single}/{n_pairs}")
     test_summary = f"Top-1 Recall: {round(recalls[0][0]/n_single, 4)}, \
                      Top-5 Recall: {round(recalls[0][1]/n_single, 4)}, \
                      Top-10 Recall: {round(recalls[0][2]/n_single, 4)}"
     logger.info(test_summary)
     print(test_summary)
-    print(f"Multi Span: {n_multi}/{len(test_set)}")
+    print(f"Multi Span: {n_multi}/{n_pairs}")
     test_summary = f"Top-1 Recall: {round(recalls[1][0]/n_multi, 4)}, \
                      Top-5 Recall: {round(recalls[1][1]/n_multi, 4)}, \
                      Top-10 Recall: {round(recalls[1][2]/n_multi, 4)}"
@@ -997,6 +997,7 @@ def run_rfe(args):
     train_loader, test_loader = get_dataloaders_ner(args, train_ids, test_ids)
 
     # er, name2id, concept2synonyms = init_rule_based_ner()
+    train_entity_inputs = processed_data['pretrain_entity_synonyms']
     entity_inputs = processed_data['entity_synonyms']
 
     if args.cross_dataset:
@@ -1021,7 +1022,7 @@ def run_rfe(args):
             if args.cross_dataset:
                 raise Exception("Model must first be trained on hNLP!")
 
-            model = train_contrastive(args, model, tokenizer, entity_inputs, train_loader, ckpt_save_path, test_loader=test_loader, load_from=best_ckpt_path)
+            model = train_contrastive(args, model, tokenizer, pretrain_entity_synonyms, train_loader, ckpt_save_path, test_loader=test_loader, load_from=best_ckpt_path)
         else:
             model.load_state_dict(torch.load(ckpt_save_path, map_location=args.device), strict=False)
             print(f"Loaded Checkpoints at \"{ckpt_save_path}\"")

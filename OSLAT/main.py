@@ -17,6 +17,7 @@ encoder_names = {
     'bluebert': 'bionlp/bluebert_pubmed_mimic_uncased_L-12_H-768_A-12',
     'clinicalbert': 'emilyalsentzer/Bio_ClinicalBERT',
     'biobert': 'dmis-lab/biobert-base-cased-v1.1',
+    'pubmedbert': 'microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext',
 }
 
 

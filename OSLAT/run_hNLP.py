@@ -769,16 +769,20 @@ def run_hnlp(args):
     hnlp_data_path = 'resources/hNLP/hNLP-train-test-seen-unseen.json'
 
     if not args.wo_pretraining:
-        # best_ckpt_path = pretrain_entity_embeddings(args, hnlp_data_path)
-        best_ckpt_path = pjoin('checkpoints', 'encoders', 'hnlp_biobert_lr0.0002_epoch18_0.17.pt')
+        best_ckpt_path = pretrain_entity_embeddings(args, hnlp_data_path)
+        # best_ckpt_path = pjoin('checkpoints', 'encoders', 'hnlp_biobert_lr0.0002_epoch18_0.17.pt')
     else:
         best_ckpt_path = None
 
     # Initialize Neural Model
     tokenizer = AutoTokenizer.from_pretrained(args.encoder_name)
     model = ContrastiveEntityExtractor(args)
-
     model = model.to(args.device)
+
+    # Load pretrained encoder (if available)
+    if best_ckpt_path != None:
+        model.encoder.load_state_dict(torch.load(best_ckpt_path, map_location=args.device))
+        print(f"Loaded encoder checkpoints at \"{best_ckpt_path}\"")
 
     with open(hnlp_data_path) as f:
         json_data = json.load(f)

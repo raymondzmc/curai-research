@@ -104,7 +104,7 @@ def pretrain_entity_embeddings(args):
     else:
         processed_data = torch.load(args.processed_data_path)
 
-    entity_inputs = processed_data['entity_synonyms']
+    entity_inputs = processed_data['pretrain_entity_synonyms']
 
     KB_entities = [] 
 
@@ -970,7 +970,6 @@ def run_rfe(args):
 
     if not args.wo_pretraining:
         best_ckpt_path = pretrain_entity_embeddings(args)
-        # best_ckpt_path = pjoin('checkpoints', 'encoders', 'rfe_biobert_lr0.002_epoch19_0.139.pt')
     else:
         best_ckpt_path = None
     args.lr = 0.0002
@@ -1008,7 +1007,7 @@ def run_rfe(args):
     train_loader, test_loader = get_dataloaders_ner(args, train_ids, test_ids)
 
     # er, name2id, concept2synonyms = init_rule_based_ner()
-    train_entity_inputs = processed_data['entity_synonyms']
+    train_entity_inputs = processed_data['pretrain_entity_synonyms']
     entity_inputs = processed_data['entity_synonyms']
 
     if args.cross_dataset:
@@ -1033,7 +1032,7 @@ def run_rfe(args):
             if args.cross_dataset:
                 raise Exception("Model must first be trained on hNLP!")
 
-            model = train_contrastive(args, model, tokenizer, pretrain_entity_synonyms, train_loader, ckpt_save_path, test_loader=test_loader, load_from=best_ckpt_path)
+            model = train_contrastive(args, model, tokenizer, train_entity_inputs, train_loader, ckpt_save_path, test_loader=test_loader, load_from=best_ckpt_path)
         else:
             model.load_state_dict(torch.load(ckpt_save_path, map_location=args.device), strict=False)
             print(f"Loaded Checkpoints at \"{ckpt_save_path}\"")

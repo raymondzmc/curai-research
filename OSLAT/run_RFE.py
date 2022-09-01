@@ -1003,7 +1003,7 @@ def run_rfe(args):
     train_loader, test_loader = get_dataloaders_ner(args, train_ids, test_ids)
 
     # er, name2id, concept2synonyms = init_rule_based_ner()
-    train_entity_inputs = processed_data['pretrain_entity_synonyms']
+    train_entity_inputs = processed_data['entity_synonyms']
     entity_inputs = processed_data['entity_synonyms']
 
     if args.cross_dataset:

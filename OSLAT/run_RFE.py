@@ -104,7 +104,7 @@ def pretrain_entity_embeddings(args):
     else:
         processed_data = torch.load(args.processed_data_path)
 
-    entity_inputs = processed_data['pretrain_entity_synonyms']
+    entity_inputs = processed_data['entity_synonyms']
 
     KB_entities = [] 
 
@@ -297,17 +297,23 @@ def evaluate_retrieval(args, model, tokenizer, test_set, entity_inputs):
             attention_masks = text_input['attention_mask']
             input_hidden = model.encoder(**text_input)[0]
 
-            if model.ignore_cls:
-                input_hidden = input_hidden[:, 1:, :]
-                attention_masks = attention_masks[:, 1:]
-
             for concept, synonym_vectors in concept2vectors.items():
-                concept_representations = model.attention_layer(
-                    synonym_vectors,
-                    input_hidden,
-                    attention_mask=attention_masks,
-                )[0]
-                probs.append((concept, pairwise_cosine_similarity(concept_representations.squeeze(0), synonym_vectors).max().item()))
+                if args.wo_contrastive:
+                    input_cls = input_hidden[:, 0]
+                    probs.append((concept, pairwise_cosine_similarity(input_cls, synonym_vectors).max().item()))
+                else:
+                    if model.ignore_cls:
+                        input_hidden = input_hidden[:, 1:, :]
+                        attention_masks = attention_masks[:, 1:]
+                    concept_representations = model.attention_layer(
+                        synonym_vectors,
+                        input_hidden,
+                        attention_mask=attention_masks,
+                    )[0]
+                    probs.append((concept, pairwise_cosine_similarity(concept_representations.squeeze(0), synonym_vectors).max().item()))
+
+
+                
 
         sorted_probs = sorted(probs, key=lambda x: x[1], reverse=True)
         sorted_ids = [prob[0] for prob in sorted_probs]
@@ -318,8 +324,8 @@ def evaluate_retrieval(args, model, tokenizer, test_set, entity_inputs):
             n_pairs += 1
 
             # TO DO: Multi-Span is obtained from annotations
-            # multi_span = example['is_multi'][name] > 1
-            multi_span = False
+            multi_span = example['is_multi'][name] > 1
+            # multi_span = False
 
             if multi_span:
                 n_multi += 1

@@ -138,7 +138,15 @@ def process_json_file_ner(file_path, tokenizer, k_folds):
     for entity_name, synonyms in json_data['entity_synonyms'].items():
         entity_synonyms[entity_name] = tokenizer(synonyms, return_tensors="pt", padding=True)
 
+    pretrain_entity_synonyms = {}
+    for entity_name, synonyms in json_data['pretrain_entity_synonyms'].items():
+        pretrain_entity_synonyms[entity_name] = tokenizer(synonyms, return_tensors="pt", padding=True)
     # kfold = KFold(n_splits=k_folds, shuffle=True, random_state=0)
     # folds = [x for x in kfold.split(data)]
-    results = {'data': data, 'entity_synonyms': entity_synonyms, 'synonyms_names': json_data['entity_synonyms']}
+    results = {
+        'data': data,
+        'entity_synonyms': entity_synonyms,
+        'pretrain_entity_synonyms': pretrain_entity_synonyms,
+        'synonyms_names': json_data['entity_synonyms'],
+    }
     return results

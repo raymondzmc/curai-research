@@ -969,8 +969,8 @@ def run_rfe(args):
     args.processed_data_path = 'resources/CuRSA/CuRSA-FIXED-v0-processed-all.pth'
 
     if not args.wo_pretraining:
-        # best_ckpt_path = pretrain_entity_embeddings(args)
-        best_ckpt_path = pjoin('checkpoints', 'encoders', 'rfe_biobert_lr0.002_epoch19_0.139.pt')
+        best_ckpt_path = pretrain_entity_embeddings(args)
+        # best_ckpt_path = pjoin('checkpoints', 'encoders', 'rfe_biobert_lr0.002_epoch19_0.139.pt')
     else:
         best_ckpt_path = None
     args.lr = 0.0002
@@ -983,6 +983,11 @@ def run_rfe(args):
 
     device = args.device
     model = model.to(device)
+
+    # Load pretrained encoder (if available)
+    if best_ckpt_path != None:
+        model.encoder.load_state_dict(torch.load(best_ckpt_path, map_location=args.device))
+        print(f"Loaded encoder checkpoints at \"{best_ckpt_path}\"")
 
 
     with open(pjoin('resources', 'CuRSA', 'cursa-train-test-seen-unseen.json')) as f:

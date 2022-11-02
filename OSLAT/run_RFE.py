@@ -765,65 +765,65 @@ def train_classifier(args, model, tokenizer, entity_inputs, entity_synonyms, tra
     max_positives = 20
     entity_list = list(entity_inputs.keys())
 
-    for epoch in range(args.epochs):
-        epoch_loss = 0
-        model.train()
+    # for epoch in range(args.epochs):
+    #     epoch_loss = 0
+    #     model.train()
 
-        for data_idx, batch in enumerate(tqdm(train_loader)):
+    #     for data_idx, batch in enumerate(tqdm(train_loader)):
 
-            batch['input'] = {k: v.to(device) for k, v in batch['input'].items()}
+    #         batch['input'] = {k: v.to(device) for k, v in batch['input'].items()}
 
-            # text_input = {k: v.to(device) for k, v in example['text_inputs'].items()}
-            batch_synonym_inputs = []
+    #         # text_input = {k: v.to(device) for k, v in example['text_inputs'].items()}
+    #         batch_synonym_inputs = []
 
-            for entity in batch['entities'][0]:
-                synonym_inputs = entity_inputs[entity]
-                if len(synonym_inputs['input_ids']) > max_positives:
-                    indices = random.sample(range(len(synonym_inputs['input_ids'])), max_positives)
-                    batch_synonym_inputs.append({k: v[indices].to(device) for k, v in synonym_inputs.items()})
-                else:
-                    batch_synonym_inputs.append({k: v.to(device) for k, v in synonym_inputs.items()})
+    #         for entity in batch['entities'][0]:
+    #             synonym_inputs = entity_inputs[entity]
+    #             if len(synonym_inputs['input_ids']) > max_positives:
+    #                 indices = random.sample(range(len(synonym_inputs['input_ids'])), max_positives)
+    #                 batch_synonym_inputs.append({k: v[indices].to(device) for k, v in synonym_inputs.items()})
+    #             else:
+    #                 batch_synonym_inputs.append({k: v.to(device) for k, v in synonym_inputs.items()})
 
 
-            # Sampling for negative training examples
-            negative_entity_names = [entity_list[idx] for idx in random.sample(range(len(entity_inputs)), args.num_negatives)]
-            negative_entity_input = collections.defaultdict(list)
-            for entity_name in negative_entity_names:
-                synonym_idx = random.sample(range(len(entity_inputs[entity_name]['input_ids'])), 1)[0]
-                for k, v in entity_inputs[entity_name].items():
-                    negative_entity_input[k].append(entity_inputs[entity_name][k][synonym_idx])
-            negative_entity_input['input_ids'] = pad_sequence(negative_entity_input['input_ids'], batch_first=True, padding_value=0).to(device)
-            negative_entity_input['token_type_ids'] = pad_sequence(negative_entity_input['token_type_ids'], batch_first=True, padding_value=0).to(device)
-            negative_entity_input['attention_mask'] = pad_sequence(negative_entity_input['attention_mask'], batch_first=True, padding_value=0).to(device)
+    #         # Sampling for negative training examples
+    #         negative_entity_names = [entity_list[idx] for idx in random.sample(range(len(entity_inputs)), args.num_negatives)]
+    #         negative_entity_input = collections.defaultdict(list)
+    #         for entity_name in negative_entity_names:
+    #             synonym_idx = random.sample(range(len(entity_inputs[entity_name]['input_ids'])), 1)[0]
+    #             for k, v in entity_inputs[entity_name].items():
+    #                 negative_entity_input[k].append(entity_inputs[entity_name][k][synonym_idx])
+    #         negative_entity_input['input_ids'] = pad_sequence(negative_entity_input['input_ids'], batch_first=True, padding_value=0).to(device)
+    #         negative_entity_input['token_type_ids'] = pad_sequence(negative_entity_input['token_type_ids'], batch_first=True, padding_value=0).to(device)
+    #         negative_entity_input['attention_mask'] = pad_sequence(negative_entity_input['attention_mask'], batch_first=True, padding_value=0).to(device)
 
-            batch_synonym_inputs.append(negative_entity_input)
+    #         batch_synonym_inputs.append(negative_entity_input)
 
-            output = model(batch['input'], batch_synonym_inputs)
+    #         output = model(batch['input'], batch_synonym_inputs)
 
-            loss = 0.
-            for input_idx, synonym_inputs in enumerate(batch_synonym_inputs[:-1]):
-                n_pos = min(max_positives, len(synonym_inputs['input_ids']))
-                n_neg = args.num_negatives
-                labels = torch.tensor([1 for _ in range(n_pos)] + [0 for _ in range(n_neg)]).to(device)
+    #         loss = 0.
+    #         for input_idx, synonym_inputs in enumerate(batch_synonym_inputs[:-1]):
+    #             n_pos = min(max_positives, len(synonym_inputs['input_ids']))
+    #             n_neg = args.num_negatives
+    #             labels = torch.tensor([1 for _ in range(n_pos)] + [0 for _ in range(n_neg)]).to(device)
 
-                pos = output['logits'][input_idx]
-                neg = output['logits'][-1]
-                logits = torch.cat((pos, neg), dim=-1).squeeze(0)
-                loss += cls_criteria(logits.unsqueeze(0), labels.unsqueeze(0).float())
+    #             pos = output['logits'][input_idx]
+    #             neg = output['logits'][-1]
+    #             logits = torch.cat((pos, neg), dim=-1).squeeze(0)
+    #             loss += cls_criteria(logits.unsqueeze(0), labels.unsqueeze(0).float())
 
-            epoch_loss += loss.item()
-            loss = loss / len(batch_synonym_inputs)
-            loss.backward()
+    #         epoch_loss += loss.item()
+    #         loss = loss / len(batch_synonym_inputs)
+    #         loss.backward()
 
-            if (data_idx + 1) % 32 == 0:
-                optimizer.step()
-                model.zero_grad()
+    #         if (data_idx + 1) % 32 == 0:
+    #             optimizer.step()
+    #             model.zero_grad()
 
         
-        lr = optimizer.optimizer.param_groups[0]['lr']
-        train_summary = f"(Epoch {epoch + 1}) Loss: {epoch_loss} LR: {lr}"
-        logger.info(train_summary)
-        print(train_summary)
+    #     lr = optimizer.optimizer.param_groups[0]['lr']
+    #     train_summary = f"(Epoch {epoch + 1}) Loss: {epoch_loss} LR: {lr}"
+    #     logger.info(train_summary)
+    #     print(train_summary)
 
     if test_set:
 
@@ -1077,7 +1077,8 @@ def run_rfe(args):
             classifier_ckpt_dir += '_freeze'
 
         os.makedirs(classifier_ckpt_dir, exist_ok=True)
-        ckpt_save_path = pjoin(classifier_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
+        # ckpt_save_path = pjoin(classifier_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
+        model.load_state_dict(torch.load(ckpt_save_path, map_location=args.device))
         model = train_classifier(
             args,
             model,

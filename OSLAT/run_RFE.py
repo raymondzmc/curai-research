@@ -743,7 +743,7 @@ def evaluate_ner(model, tokenizer, dataframe, test_ids, ignore_cls=True, thresho
     return results
 
 
-def train_classifier(args, model, tokenizer, entity_inputs, entity_synonyms, train_loader, ckpt_save_path, test_set=None):
+def train_classifier(args, model, tokenizer, entity_inputs, entity_synonyms, train_loader, ckpt_save_path, test_set=None, use_ground_truth=False):
     logger = init_logger(f'classification_training_hnlp.log')
     optimizer = build_optim(args, model)
 
@@ -897,6 +897,8 @@ def train_classifier(args, model, tokenizer, entity_inputs, entity_synonyms, tra
             sorted_baseline_probs = sorted(baseline_probs, key=lambda x: x[1], reverse=True)
             sorted_baseline_ids = [prob[0] for prob in sorted_baseline_probs]
 
+            skipped = []
+
             # OSLAT-Linker
             probs = []
             with torch.no_grad():
@@ -909,6 +911,18 @@ def train_classifier(args, model, tokenizer, entity_inputs, entity_synonyms, tra
                     attention_masks = attention_masks[:, 1:]
 
                 for concept, synonym_vectors in concept2vectors.items():
+
+                    if use_ground_truth and concept in example['entities']:
+                        if concept in example['ground_truth_masks'].keys():
+                            pdb.set_trace()
+                        try:
+                            attention_scores = torch.tensor(example['ground_truth_masks'][concept]).to(device).unsqueeze(0).unsqueeze(1)
+                        except:
+                            skipped.append(concept)
+                            continue
+                    else:
+                        attention_scores = None
+
                     concept_representations = model.attention_layer(
                         synonym_vectors,
                         input_hidden,
@@ -926,6 +940,9 @@ def train_classifier(args, model, tokenizer, entity_inputs, entity_synonyms, tra
 
             # Accumuate scores
             for entity_idx, name in enumerate(example['entities']):
+                if name in skipped:
+                    continue
+
                 n_pairs += 1
 
                 # TO DO: Multi-Span is obtained from annotations
@@ -965,11 +982,14 @@ def train_classifier(args, model, tokenizer, entity_inputs, entity_synonyms, tra
 def run_rfe(args):
 
     # Pretrain entity embeddings
-    args.json_data_path = 'resources/CuRSA/CuRSA-FIXED-v0-processed-all.json'
-    args.processed_data_path = 'resources/CuRSA/CuRSA-FIXED-v0-processed-all.pth'
+    # args.json_data_path = 'resources/CuRSA/CuRSA-FIXED-v0-processed-all.json'
+    # args.processed_data_path = 'resources/CuRSA/CuRSA-FIXED-v0-processed-all.pth'
+    args.json_data_path = 'cursa_with_span_annot.json'
+    args.processed_data_path = 'cursa_with_span_annot.pth'
 
     if not args.wo_pretraining:
-        best_ckpt_path = pretrain_entity_embeddings(args)
+        # best_ckpt_path = pretrain_entity_embeddings(args)
+        best_ckpt_path = 'checkpoints/encoders/rfe_biobert_lr0.002_epoch20_0.14.pt'
     else:
         best_ckpt_path = None
     args.lr = 0.0002
@@ -1009,7 +1029,8 @@ def run_rfe(args):
     # er, name2id, concept2synonyms = init_rule_based_ner()
     train_entity_inputs = processed_data['pretrain_entity_synonyms']
     entity_inputs = processed_data['entity_synonyms']
-
+    entity_inputs.update(train_entity_inputs)
+    
     if args.cross_dataset:
         contrastive_ckpt_dir = pjoin(args.checkpoints_dir, 'contrastive_ner_hnlp')
     else:
@@ -1025,17 +1046,17 @@ def run_rfe(args):
     os.makedirs(contrastive_ckpt_dir, exist_ok=True)
 
 
-    ckpt_save_path = pjoin(contrastive_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
-    if not args.wo_contrastive:
-        if not os.path.isfile(ckpt_save_path):
+    # ckpt_save_path = pjoin(contrastive_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
+    # if not args.wo_contrastive:
+    #     if not os.path.isfile(ckpt_save_path):
 
-            if args.cross_dataset:
-                raise Exception("Model must first be trained on hNLP!")
+    #         if args.cross_dataset:
+    #             raise Exception("Model must first be trained on hNLP!")
 
-            model = train_contrastive(args, model, tokenizer, train_entity_inputs, train_loader, ckpt_save_path, test_loader=test_loader, load_from=best_ckpt_path)
-        else:
-            model.load_state_dict(torch.load(ckpt_save_path, map_location=args.device), strict=False)
-            print(f"Loaded Checkpoints at \"{ckpt_save_path}\"")
+    #         model = train_contrastive(args, model, tokenizer, entity_inputs, train_loader, ckpt_save_path, test_loader=test_loader, load_from=best_ckpt_path)
+    #     else:
+    #         model.load_state_dict(torch.load(ckpt_save_path, map_location=args.device), strict=False)
+    #         print(f"Loaded Checkpoints at \"{ckpt_save_path}\"")
 
     if args.retrieval_loss:
         evaluate_retrieval(args, model, tokenizer, test_loader.dataset, entity_inputs)
@@ -1066,6 +1087,7 @@ def run_rfe(args):
             train_loader,
             ckpt_save_path,
             test_set=test_loader.dataset,
+            use_ground_truth=True,
         )
 
 

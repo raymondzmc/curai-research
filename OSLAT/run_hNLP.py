@@ -568,6 +568,133 @@ def evaluate_hnlp_ner(model, tokenizer, data_path, ignore_cls=True, baseline=Non
         print(f"(Macro) P: {_macro_precision}, R: {_macro_recall}, F: {_macro_f1}")
     return results
 
+
+def eval_classifier(args, model, tokenizer, id2synonyms, test_set, use_ground_truth=False):
+    logger = init_logger(f'classification_training_hnlp.log')
+    recalls = [[0, 0, 0], [0, 0, 0]]
+    model.eval()
+    id2vectors = {}
+    device = args.device
+    nlp = spacy.blank("en")
+    matcher = FuzzyMatcher(nlp.vocab)
+
+
+    # Precompute entity embeddings
+    for concept_id, synonyms in id2synonyms.items():
+        synonym_inputs = tokenizer(synonyms, return_tensors="pt", padding=True)
+        synonym_inputs = {k: v.to(device) for k, v in synonym_inputs.items()}
+        with torch.no_grad():
+            synonym_vectors = model.encoder(**synonym_inputs)[0][:, 0, :].detach()
+        id2vectors[concept_id] = synonym_vectors
+
+    n_multi = 0
+    n_pairs = 0
+    for example in tqdm(test_set):
+
+    #     # Baseline
+    #     baseline_probs = []
+    #     for concept_id, synonyms in id2synonyms.items():
+    #         max_sim = 0
+    #         for syn in synonyms:
+    #             matcher.add(syn, [nlp(syn)], on_match=add_name_ent)
+
+    #         text = ' '.join([x for x in example['tokens'] if x.strip()])
+    #         matches = matcher(nlp(text))
+
+    #         if matches:
+    #             for match in matches:
+    #                 if match[-1] > max_sim:
+    #                     max_sim = match[-1]
+
+    #         for syn in synonyms:
+    #             matcher.remove(syn)
+
+    #         if max_sim > 0:
+    #             baseline_probs.append((concept_id, max_sim))
+    #     sorted_probs = sorted(baseline_probs, key=lambda x: x[1], reverse=True)
+
+        # OSLAT-Linker
+        probs = []
+        with torch.no_grad():
+            text_input = {k: v.to(device) for k, v in example['text_inputs'].items()}
+            attention_masks = text_input['attention_mask']
+            input_hidden = model.encoder(**text_input)[0]
+            if model.ignore_cls:
+                input_hidden = input_hidden[:, 1:, :]
+                attention_masks = attention_masks[:, 1:]
+            skipped = []
+
+            for concept_id, synonym_vectors in id2vectors.items():
+
+                # Use ground-truth annotation as the attention scores
+                if use_ground_truth and concept_id in example['entity_ids']:
+                    concept_idx = example['entity_ids'].index(concept_id)
+                    try:
+                        attention_scores = torch.tensor(example['ground_truth_masks'][concept_idx]).to(device).unsqueeze(0).unsqueeze(1)
+                    except:
+                        skipped.append(concept_id)
+                        continue
+                else:
+                    attention_scores = None
+
+                concept_representations = model.attention_layer(
+                    synonym_vectors,
+                    input_hidden,
+                    attention_mask=attention_masks,
+                    attention_scores=attention_scores,
+                )[0]
+
+                if args.append_query:
+                    concept_representations = torch.cat((concept_representations, synonym_vectors.unsqueeze(0)), dim=-1)
+
+                logits = model.classifier(concept_representations).squeeze(-1)
+                probs.append((concept_id, logits.max().item()))
+        sorted_probs = sorted(probs, key=lambda x: x[1], reverse=True)
+
+
+        sorted_ids = [prob[0] for prob in sorted_probs]
+        for entity_idx, gt_id in enumerate(example['entity_ids']):
+            if gt_id in skipped:
+                continue
+
+            multi_span = example['multispan'][entity_idx]
+            if multi_span:
+                n_multi += 1
+                recall_idx = 1
+            else:
+                recall_idx = 0
+
+            if gt_id in sorted_ids[:1]:
+                recalls[recall_idx][0] += 1
+            if gt_id in sorted_ids[:5]:
+                recalls[recall_idx][1] += 1
+            if gt_id in sorted_ids[:10]:
+                recalls[recall_idx][2] += 1
+
+            n_pairs += 1
+
+
+    n_single = n_pairs - n_multi
+    print(f"Single Span: {n_single}/{len(test_set)}")
+    test_summary = f"Top-1 Recall: {round(recalls[0][0]/n_single, 4)}, \
+                     Top-5 Recall: {round(recalls[0][1]/n_single, 4)}, \
+                     Top-10 Recall: {round(recalls[0][2]/n_single, 4)}"
+    logger.info(test_summary)
+    print(test_summary)
+    print(f"Multi Span: {n_multi}/{len(test_set)}")
+    test_summary = f"Top-1 Recall: {round(recalls[1][0]/n_multi, 4)}, \
+                     Top-5 Recall: {round(recalls[1][1]/n_multi, 4)}, \
+                     Top-10 Recall: {round(recalls[1][2]/n_multi, 4)}"
+    logger.info(test_summary)
+    print(test_summary)
+    print(f"All: {n_pairs}")
+    test_summary = f"Top-1 Recall: {round((recalls[0][0] + recalls[1][0])/n_pairs, 4)}, \
+                     Top-5 Recall: {round((recalls[0][1] + recalls[1][1])/n_pairs, 4)}, \
+                     Top-10 Recall: {round((recalls[0][2] + recalls[1][2])/n_pairs, 4)}"
+    logger.info(test_summary)
+    print(test_summary)
+
+
 def train_classifier(args, model, tokenizer, id2synonyms, train_set, ckpt_save_path, test_set=None):
     logger = init_logger(f'classification_training_hnlp.log')
     optimizer = build_optim(args, model)
@@ -643,116 +770,9 @@ def train_classifier(args, model, tokenizer, id2synonyms, train_set, ckpt_save_p
         train_summary = f"(Epoch {epoch + 1}) Loss: {epoch_loss} LR: {lr}"
         logger.info(train_summary)
         print(train_summary)
-
+        
         if test_set:
-            recalls = [[0, 0, 0], [0, 0, 0]]
-            model.eval()
-            id2vectors = {}
-
-            nlp = spacy.blank("en")
-            matcher = FuzzyMatcher(nlp.vocab)
-
-
-            # # Precompute entity embeddings
-            # for concept_id, synonyms in id2synonyms.items():
-            #     synonym_inputs = tokenizer(synonyms, return_tensors="pt", padding=True)
-            #     synonym_inputs = {k: v.to(device) for k, v in synonym_inputs.items()}
-            #     with torch.no_grad():
-            #         synonym_vectors = model.encoder(**synonym_inputs)[0][:, 0, :].detach()
-            #     id2vectors[concept_id] = synonym_vectors
-
-            n_multi = 0
-            n_pairs = 0
-            for example in tqdm(test_set):
-            #     n_pairs += 1
-
-            #     # Baseline
-            #     baseline_probs = []
-            #     for concept_id, synonyms in id2synonyms.items():
-            #         max_sim = 0
-            #         for syn in synonyms:
-            #             matcher.add(syn, [nlp(syn)], on_match=add_name_ent)
-
-            #         text = ' '.join([x for x in example['tokens'] if x.strip()])
-            #         matches = matcher(nlp(text))
-
-            #         if matches:
-            #             for match in matches:
-            #                 if match[-1] > max_sim:
-            #                     max_sim = match[-1]
-
-            #         for syn in synonyms:
-            #             matcher.remove(syn)
-
-            #         if max_sim > 0:
-            #             baseline_probs.append((concept_id, max_sim))
-            #     sorted_probs = sorted(baseline_probs, key=lambda x: x[1], reverse=True)
-
-                # OSLAT-Linker
-                probs = []
-                with torch.no_grad():
-                    text_input = {k: v.to(device) for k, v in example['text_inputs'].items()}
-                    attention_masks = text_input['attention_mask']
-                    input_hidden = model.encoder(**text_input)[0]
-
-                    if model.ignore_cls:
-                        input_hidden = input_hidden[:, 1:, :]
-                        attention_masks = attention_masks[:, 1:]
-
-                    for concept_id, synonym_vectors in id2vectors.items():
-                        concept_representations = model.attention_layer(
-                            synonym_vectors,
-                            input_hidden,
-                            attention_mask=attention_masks,
-                        )[0]
-
-                        if args.append_query:
-                            concept_representations = torch.cat((concept_representations, synonym_vectors.unsqueeze(0)), dim=-1)
-
-                        logits = model.classifier(concept_representations).squeeze(-1)
-                        probs.append((concept_id, logits.max().item()))
-                sorted_probs = sorted(probs, key=lambda x: x[1], reverse=True)
-
-
-                sorted_ids = [prob[0] for prob in sorted_probs]
-                for entity_idx, gt_id in enumerate(example['entity_ids']):
-                    multi_span = example['multispan'][entity_idx]
-
-                    if multi_span:
-                        n_multi += 1
-                        recall_idx = 1
-                    else:
-                        recall_idx = 0
-
-                    if gt_id in sorted_ids[:1]:
-                        recalls[recall_idx][0] += 1
-                    if gt_id in sorted_ids[:5]:
-                        recalls[recall_idx][1] += 1
-                    if gt_id in sorted_ids[:10]:
-                        recalls[recall_idx][2] += 1
-
-
-
-            n_single = n_pairs - n_multi
-            print(f"Single Span: {n_single}/{len(test_set)}")
-            test_summary = f"Top-1 Recall: {round(recalls[0][0]/n_single, 4)}, \
-                             Top-5 Recall: {round(recalls[0][1]/n_single, 4)}, \
-                             Top-10 Recall: {round(recalls[0][2]/n_single, 4)}"
-            logger.info(test_summary)
-            print(test_summary)
-            print(f"Multi Span: {n_multi}/{len(test_set)}")
-            test_summary = f"Top-1 Recall: {round(recalls[1][0]/n_multi, 4)}, \
-                             Top-5 Recall: {round(recalls[1][1]/n_multi, 4)}, \
-                             Top-10 Recall: {round(recalls[1][2]/n_multi, 4)}"
-            logger.info(test_summary)
-            print(test_summary)
-            print(f"All: {n_pairs}")
-            test_summary = f"Top-1 Recall: {round((recalls[0][0] + recalls[1][0])/n_pairs, 4)}, \
-                             Top-5 Recall: {round((recalls[0][1] + recalls[1][1])/n_pairs, 4)}, \
-                             Top-10 Recall: {round((recalls[0][2] + recalls[1][2])/n_pairs, 4)}"
-            logger.info(test_summary)
-            print(test_summary)
-                    
+            eval_classifier(args, model, tokenizer, id2synonyms, test_set)
 
 
 
@@ -769,8 +789,8 @@ def run_hnlp(args):
     hnlp_data_path = 'resources/hNLP/hNLP-train-test-seen-unseen.json'
 
     if not args.wo_pretraining:
-        best_ckpt_path = pretrain_entity_embeddings(args, hnlp_data_path)
-        # best_ckpt_path = pjoin('checkpoints', 'encoders', 'hnlp_biobert_lr0.0002_epoch18_0.17.pt')
+        # best_ckpt_path = pretrain_entity_embeddings(args, hnlp_data_path)
+        best_ckpt_path = pjoin('checkpoints', 'encoders', 'hnlp_biobert_lr0.0002_epoch18_0.17.pt')
     else:
         best_ckpt_path = None
 
@@ -794,71 +814,73 @@ def run_hnlp(args):
     train_set = HNLPContrastiveNERDataset(data_split['TRAIN'], tokenizer, id2synonyms)
     test_set = HNLPContrastiveNERDataset(data_split['TEST'], tokenizer, id2synonyms)
 
-    if args.cross_dataset:
-        contrastive_ckpt_dir = pjoin(args.checkpoints_dir, 'contrastive_ner_rfe')
-    else:
-        contrastive_ckpt_dir = pjoin(args.checkpoints_dir, 'contrastive_ner_hnlp')
+    # if args.cross_dataset:
+    #     contrastive_ckpt_dir = pjoin(args.checkpoints_dir, 'contrastive_ner_rfe')
+    # else:
+    #     contrastive_ckpt_dir = pjoin(args.checkpoints_dir, 'contrastive_ner_hnlp')
 
-    if args.wo_pretraining:
-        contrastive_ckpt_dir += '_nopretrain'
-    if args.append_query:
-        contrastive_ckpt_dir += '_concatquery'
-    if args.retrieval_loss:
-        contrastive_ckpt_dir += '_retrieval'
+    # if args.wo_pretraining:
+    #     contrastive_ckpt_dir += '_nopretrain'
+    # if args.append_query:
+    #     contrastive_ckpt_dir += '_concatquery'
+    # if args.retrieval_loss:
+    #     contrastive_ckpt_dir += '_retrieval'
 
-    os.makedirs(contrastive_ckpt_dir, exist_ok=True)
+    # os.makedirs(contrastive_ckpt_dir, exist_ok=True)
 
-    ckpt_save_path = pjoin(contrastive_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
-    if not args.wo_contrastive:
-        if not os.path.isfile(ckpt_save_path):
+    # ckpt_save_path = pjoin(contrastive_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
+    # if not args.wo_contrastive:
+    #     if not os.path.isfile(ckpt_save_path):
 
-            if cross_dataset:
-                raise Exception("Model must first be trained on RFE!")
+    #         if args.cross_dataset:
+    #             raise Exception("Model must first be trained on RFE!")
 
-            model = train_contrastive(
-                args,
-                model,
-                tokenizer,
-                id2synonyms,
-                train_set,
-                ckpt_save_path,
-                top_k_ckpts=3,
-                load_from=best_ckpt_path,
-            )
-        else:
+    #         model = train_contrastive(
+    #             args,
+    #             model,
+    #             tokenizer,
+    #             id2synonyms,
+    #             train_set,
+    #             ckpt_save_path,
+    #             top_k_ckpts=3,
+    #             load_from=best_ckpt_path,
+    #         )
+    #     else:
 
-            model.load_state_dict(torch.load(ckpt_save_path, map_location=args.device), strict=False)
-            print(f"Loaded Checkpoints at \"{ckpt_save_path}\"")
+    #         model.load_state_dict(torch.load(ckpt_save_path, map_location=args.device), strict=False)
+    #         print(f"Loaded Checkpoints at \"{ckpt_save_path}\"")
 
-    if args.retrieval_loss:
-        evaluate_retrieval(args, model, tokenizer, test_set, id2synonyms)
-    else:
-        classifier_ckpt_dir = pjoin(args.checkpoints_dir, 'classifier')
-        if args.append_query:
-            classifier_ckpt_dir += '_concatquery'
+    # if args.retrieval_loss:
+    #     evaluate_retrieval(args, model, tokenizer, test_set, id2synonyms)
+    # else:
+    #     classifier_ckpt_dir = pjoin(args.checkpoints_dir, f'classifier_{args.dataset}')
+    #     if args.append_query:
+    #         classifier_ckpt_dir += '_concatquery'
 
-        if args.wo_pretraining:
-            classifier_ckpt_dir += '_nopretrain'
-        if args.wo_contrastive:
-            classifier_ckpt_dir += '_nocontrastive'
+    #     if args.wo_pretraining:
+    #         classifier_ckpt_dir += '_nopretrain'
+    #     if args.wo_contrastive:
+    #         classifier_ckpt_dir += '_nocontrastive'
 
-        if args.classification_loss == 'focal':
-            classifier_ckpt_dir += '_focal'
+    #     if args.classification_loss == 'focal':
+    #         classifier_ckpt_dir += '_focal'
 
-        if args.freeze_weights:
-            classifier_ckpt_dir += '_freeze'
+    #     if args.freeze_weights:
+    #         classifier_ckpt_dir += '_freeze'
 
-        os.makedirs(classifier_ckpt_dir, exist_ok=True)
-        ckpt_save_path = pjoin(classifier_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
-        model = train_classifier(
-            args,
-            model,
-            tokenizer,
-            id2synonyms,
-            train_set,
-            ckpt_save_path,
-            test_set=test_set,
-        )
+    #     os.makedirs(classifier_ckpt_dir, exist_ok=True)
+    #     ckpt_save_path = pjoin(classifier_ckpt_dir, f"{args.encoder}_lr{args.lr}_epoch{args.epochs}.pth")
+    #     model = train_classifier(
+    #         args,
+    #         model,
+    #         tokenizer,
+    #         id2synonyms,
+    #         train_set,
+    #         ckpt_save_path,
+    #         test_set=test_set,
+    #     )
+    model.load_state_dict(torch.load(pjoin('checkpoints', 'classifier_focal_freeze', 'biobert_lr0.0002_epoch10.pth')))
+    eval_classifier(args, model, tokenizer, id2synonyms, test_set, use_ground_truth=True)
 
 
     """

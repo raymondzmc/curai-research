@@ -124,29 +124,35 @@ class EntityAttention(nn.Module):
         x = x.view(*new_x_shape)
         return x.permute(0, 2, 1, 3)
 
-    def forward(self, entity_embeddings, hidden_states, attention_mask=None, output_attentions=False):
+    def forward(self, entity_embeddings, hidden_states, attention_mask=None, output_attentions=False, attention_scores=None):
         # value_layer = self.value(hidden_states)
 
-        key = hidden_states
+        if attention_scores == None:
+            key = hidden_states
 
-        if self.attention_type > 0:
-            entity_embeddings = self.query(entity_embeddings)
+            if self.attention_type > 0:
+                entity_embeddings = self.query(entity_embeddings)
 
-        if self.attention_type > 1:
-            key = self.key(key)
+            if self.attention_type > 1:
+                key = self.key(key)
 
 
-        attention_scores = torch.matmul(entity_embeddings.unsqueeze(0), key.transpose(-1, -2))
-        attention_scores = attention_scores / math.sqrt(self.hidden_size)
-        # Take the dot product between "query" and "key" to get the raw attention scores.
-        # attention_scores = torch.matmul(query_layer.unsqueeze(0), key_layer.transpose(-1, -2))
+            attention_scores = torch.matmul(entity_embeddings.unsqueeze(0), key.transpose(-1, -2))
+            attention_scores = attention_scores / math.sqrt(self.hidden_size)
+            # Take the dot product between "query" and "key" to get the raw attention scores.
+            # attention_scores = torch.matmul(query_layer.unsqueeze(0), key_layer.transpose(-1, -2))
+        else:
 
+            attention_scores = attention_scores[:, :, 1:].float()
+            attention_scores[attention_scores == 0] = -10000.0
 
         # attention_scores = attention_scores / math.sqrt(self.attention_head_size)
         if attention_mask is not None:
             extended_attention_mask = attention_mask[:, None, :]
             extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
             attention_scores = attention_scores + extended_attention_mask
+
+
 
         # Normalize the attention scores to probabilities.
         attention_probs = nn.functional.softmax(attention_scores, dim=-1)
